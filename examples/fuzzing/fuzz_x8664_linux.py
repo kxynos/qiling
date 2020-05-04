@@ -16,8 +16,10 @@ import unicornafl
 # Make sure Qiling uses our patched unicorn instead of it's own, second so without instrumentation!
 unicornafl.monkeypatch()
 
-import sys
+import sys, os
 from binascii import hexlify
+
+from capstone.x86_const import *
 
 sys.path.append("../..")
 from qiling import *
@@ -71,10 +73,9 @@ def main(input_file, enable_trace=False):
     stdin = MyPipe()
     ql = Qiling(["./x8664_fuzz"], "../rootfs/x8664_linux",
                 stdin=stdin,
-                log_console=enable_trace,
                 stdout=1 if enable_trace else None,
                 stderr=1 if enable_trace else None,
-                output="out" if enable_trace else "off")
+                log_console = True if enable_trace else False)
 
     # or this for output:
     # ... stdout=sys.stdout, stderr=sys.stderr)
@@ -92,7 +93,7 @@ def main(input_file, enable_trace=False):
             #print("Starting afl_fuzz().")
             if not _ql.uc.afl_fuzz(input_file=input_file,
                         place_input_callback=place_input_callback,
-                        exits=[ql.until_addr]):
+                        exits=[ql.exit_point]):
                 print("Ran once without AFL attached.")
                 os._exit(0)  # that's a looot faster than tidying up.
         except unicornafl.UcAflError as ex:

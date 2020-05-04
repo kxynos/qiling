@@ -204,7 +204,7 @@ def ql_syscall_brk(ql, brk_input, *args, **kw):
         new_brk_addr = ((brk_input + 0xfff) // 0x1000) * 0x1000
 
         if brk_input > ql.loader.brk_address: # increase current brk_address if brk_input is greater
-            ql.mem.map(ql.loader.brk_address, new_brk_addr - ql.loader.brk_address)
+            ql.mem.map(ql.loader.brk_address, new_brk_addr - ql.loader.brk_address, info="[brk]")
 
         elif brk_input < ql.loader.brk_address: # shrink current bkr_address to brk_input if its smaller
             ql.mem.unmap(new_brk_addr, ql.loader.brk_address - new_brk_addr)
@@ -464,14 +464,14 @@ def ql_syscall_execve(ql, execve_pathname, execve_argv, execve_envp, *args, **kw
     if ql.shellcoder:
         pass
     else:
-        ql.stack_address    = 0
+        ql.os.stack_address    = 0
         ql.argv             = argv
         ql.env              = env
         ql.path             = real_path
         ql.mem.map_info     = []
+        ql.clear_ql_hooks()
 
         ql.os.load()
-        ql.loader.__init__(ql)
         ql.run()
 
 
@@ -531,8 +531,8 @@ def ql_syscall_pipe(ql, pipe_pipefd, *args, **kw):
         else:
             ql.os.file_des[idx1] = rd
             ql.os.file_des[idx2] = wd
-            if ql.archtype== QL_ARCH.MIPS32:
-                ql.register(UC_MIPS_REG_V1, idx2)
+            if ql.archtype== QL_ARCH.MIPS:
+                ql.reg.v1 = idx2
                 regreturn = idx1
             else:
                 ql.mem.write(pipe_pipefd, ql.pack32(idx1) + ql.pack32(idx2))

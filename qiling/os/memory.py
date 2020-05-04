@@ -3,9 +3,10 @@
 # Cross Platform and Multi Architecture Advanced Binary Emulation Framework
 # Built on top of Unicorn emulator (www.unicorn-engine.org) 
 
+import os
+
 from qiling.const import *
 from qiling.exception import *
-from qiling.os.utils import *
 
 from unicorn import (
     UC_PROT_ALL,
@@ -32,18 +33,24 @@ class QlMemoryManager:
 
         self.max_addr = max_addr
         self.max_mem_addr = max_addr            
-    
-    def string(self, address, value = None):
+
+
+    def string(self, addr, value=None ,encoding='utf-8'): 
         if value == None:
             ret = ""
-            c = self.ql.mem.read(address, 1)[0]
+            c = self.read(addr, 1)[0]
             read_bytes = 1
 
             while c != 0x0:
                 ret += chr(c)
-                c = self.ql.mem.read(address + read_bytes, 1)[0]
+                c = self.read(addr + read_bytes, 1)[0]
                 read_bytes += 1
             return ret
+        else:
+            string_bytes = bytes(value, encoding) + b'\x00'
+            self.write(addr, string_bytes)
+            return None
+
 
     def add_mapinfo(self, mem_s, mem_e, mem_p, mem_info):
         tmp_map_info = []
@@ -331,7 +338,7 @@ class QlMemoryManager:
 
     def get_mapped(self):
         for idx, val in enumerate(self.ql.uc.mem_regions()):
-            print(idx, list(map(hex, val)))
+            self.ql.nprint(idx, list(map(hex, val)))
 
 # A Simple Heap Implementation
 class Chunk():
@@ -362,12 +369,10 @@ class QlMemoryHeap:
 
     def mem_alloc(self, size):
         
-        if self.ql.archtype == QL_ARCH.X86:
+        if self.ql.archbit == 32:
             size = self._align(size, 4)
-        elif self.ql.archtype == QL_ARCH.X8664:
+        elif self.ql.archbit == 64:
             size = self._align(size, 8)
-        else:
-            raise QlErrorArch("[!] Unknown ql.arch")
 
         # Find the heap chunks that best matches size 
         self.chunks.sort(key=Chunk.compare)
@@ -383,7 +388,7 @@ class QlMemoryHeap:
             # If the heap is not enough
             if self.start_address + self.current_use + real_size > self.end_address:
                 return 0
-            self.ql.mem.map(self.start_address + self.current_alloc, real_size)
+            self.ql.mem.map(self.start_address + self.current_alloc, real_size, info="[heap]")
             chunk = Chunk(self.start_address + self.current_use, size)
             self.current_alloc += real_size
             self.current_use += size
@@ -394,7 +399,7 @@ class QlMemoryHeap:
             self.chunks.append(chunk)
 
         chunk.inuse = True
-        # print("heap.mem_alloc addresss: " + hex(chunk.address))
+        #self.ql.dprint(D_INFO,"heap.mem_alloc addresss: " + hex(chunk.address))
         return chunk.address
 
     def mem_size(self, addr):

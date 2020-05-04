@@ -3,26 +3,31 @@
 # Cross Platform and Multi Architecture Advanced Binary Emulation Framework
 # Built on top of Unicorn emulator (www.unicorn-engine.org)
 
-import sys
 import platform
 import ntpath
-import os as pyos
+import os
+import logging
 
-from .const import *
-from .exception import *
-from .utils import *
+from .const import QL_ENDINABLE, QL_ENDIAN, QL_POSIX, QL_OS_ALL, QL_OUTPUT, QL_OS
+from .exception import QlErrorFileNotFound, QlErrorArch, QlErrorOsType, QlErrorOutput
+from .utils import arch_convert, ostype_convert, output_convert
+from .utils import ql_is_valid_arch, ql_get_arch_bits
+from .utils import ql_setup_logging_env
+from .utils import Strace_filter
 from .core_struct import QLCoreStructs
 from .core_hooks import QLCoreHooks
+from .core_utils import QLCoreUtils
+from .debugger import ql_debugger_init
 
 __version__ = "1.0"
 
-class Qiling(QLCoreStructs, QLCoreHooks):    
+class Qiling(QLCoreStructs, QLCoreHooks, QLCoreUtils):    
     def __init__(
             self,
             filename=None,
             rootfs=None,
-            argv=[],
-            env={},
+            argv=None,
+            env=None,
             shellcoder=None,
             ostype=None,
             archtype=None,
@@ -35,13 +40,14 @@ class Qiling(QLCoreStructs, QLCoreHooks):
             verbose=1,
             log_console=True,
             log_dir=None,
-            mmap_start=0,
-            stack_address=0,
-            stack_size=0,
-            interp_base=0,
             append = None,
+            profile=None
     ):
-        # Define during ql=Qiling()
+        super(Qiling, self).__init__()
+
+        ##################################
+        # Definition during ql=Qiling()  #
+        ##################################
         self.output = output
         self.verbose = verbose
         self.ostype = ostype
@@ -50,28 +56,26 @@ class Qiling(QLCoreStructs, QLCoreHooks):
         self.shellcoder = shellcoder
         self.filename = filename
         self.rootfs = rootfs
-        self.argv = argv
-        self.env = env
+        self.argv = argv if argv else []
+        self.env = env if env else {}
         self.libcache = libcache
         self.log_console = log_console
         self.log_dir = log_dir
-        self.mmap_start = mmap_start
-        self.stack_address = stack_address
-        self.stack_size = stack_size
-        self.interp_base = interp_base
-        # generic append function, eg log file        
-        self.append = append
+        self.append = append # generic append function, eg log file
+        self.profile = profile
+        # OS dependent configuration for stdio
+        self.stdin = stdin
+        self.stdout = stdout
+        self.stderr = stderr
 
-        # Define after ql=Qiling(), either defined by Qiling Framework or user defined
+        ##################################
+        # Definition after ql=Qiling()   #
+        ##################################
         self.archbit = ''
         self.path = ''
-        self.entry_point = 0
         self.patch_bin = []
         self.patch_lib = []
         self.patched_lib = []
-        self.timeout = 0
-        self.until_addr = 0
-        self.byte = 0
         self.log_file_fd = None
         self.fs_mapper = []
         self.exit_code = 0
@@ -79,12 +83,10 @@ class Qiling(QLCoreStructs, QLCoreHooks):
         self.internal_exception = None
         self.platform = platform.system()
         self.debugger = None
-        self.automatize_input = False
-        self.profile = None 
         # due to the instablity of multithreading, added a swtich for multithreading. at least for MIPS32EL for now
         self.multithread = False
         # To use IPv6 or not, to avoid binary double bind. ipv6 and ipv4 bind the same port at the same time
-        self.ipv6 = False        
+        self.ipv6 = False
         # Bind to localhost
         self.bindtolocalhost = False
         # by turning this on, you must run your analysis with sudo
@@ -92,115 +94,104 @@ class Qiling(QLCoreStructs, QLCoreHooks):
         self.log_split = False
         # syscall filter for strace-like functionality
         self.strace_filter = None
-
+        self.remotedebugsession = None
+        self.automatize_input = False
 
         """
         Qiling Framework Core Engine
         """
-        # ostype string - int convertion
+        # shellcoder settings
         if self.shellcoder:
             if (self.ostype and type(self.ostype) == str) and (self.archtype and type(self.archtype) == str ):
                 self.ostype = self.ostype.lower()
                 self.ostype = ostype_convert(self.ostype)
                 self.archtype = self.archtype.lower()
                 self.archtype = arch_convert(self.archtype)
-
-        # read file propeties, not shellcoder
-        if self.rootfs and self.shellcoder is None:
-            if pyos.path.exists(str(self.filename[0])) and pyos.path.exists(self.rootfs):
+                self.filename = ["qilingshellcode"]
+                self.targetname = "qilingshellcode"
+                if self.rootfs is None:
+                    self.rootfs = "."
+        # file settings
+        elif self.shellcoder is None:
+            if os.path.exists(str(self.filename[0])) and os.path.exists(self.rootfs):
                 self.path = (str(self.filename[0]))
-                if self.ostype is None or self.archtype is None:
-                    self.archtype, self.ostype = ql_checkostype(self)
-
                 self.argv = self.filename
-
+                self.targetname = ntpath.basename(self.filename[0])
             else:
-                if not pyos.path.exists(str(self.filename[0])):
+                if not os.path.exists(str(self.filename[0])):
                     raise QlErrorFileNotFound("[!] Target binary not found")
-                if not pyos.path.exists(self.rootfs):
+                if not os.path.exists(self.rootfs):
                     raise QlErrorFileNotFound("[!] Target rootfs not found")
-
-        if self.shellcoder:
-            self.targetname = "qilingshellcode"
-        else:    
-            self.targetname = ntpath.basename(self.filename[0])
+        
+        ##########
+        # Loader #
+        ##########        
+        self.loader = self.loader_setup()
 
         # Looger's configuration
-        _logger = ql_setup_logging_stream(self)
         if self.log_dir is not None and type(self.log_dir) == str:
-            _logger = ql_setup_logging_env(self, _logger)    
-        self.log_file_fd = _logger
-            
-        # OS dependent configuration for stdio
-        self.stdin = stdin
-        self.stdout = stdout
-        self.stderr = stderr
-
-        # double check supported architecture
-        if not ql_is_valid_arch(self.archtype):
-            raise QlErrorArch("[!] Invalid Arch")
-
-        # chceck for supported OS type
-        if self.ostype not in QL_OS_ALL:
-            raise QlErrorOsType("[!] OSTYPE required: either 'linux', 'windows', 'freebsd', 'macos'")
+            _logger = ql_setup_logging_env(self)    
+            self.log_file_fd = _logger
         
         # qiling output method conversion
         if self.output and type(self.output) == str:
+            # setter / getter for output
             self.output = self.output.lower()
             if self.output not in QL_OUTPUT:
-                raise QlErrorOutput("[!] OUTPUT required: either 'default', 'off', 'disasm', 'debug', 'dump'")
-
+                raise QlErrorOutput("[!] OUTPUT required: either 'default', 'disasm', 'debug', 'dump'")
+            
         # check verbose, only can check after ouput being defined
         if type(self.verbose) != int or self.verbose > 99 and (self.verbose > 0 and self.output not in (QL_OUTPUT.DEBUG, QL_OUTPUT.DUMP)):
             raise QlErrorOutput("[!] verbose required input as int and less than 99")
         
-        ##############################################################
-        # Define file is 32 or 64bit and check file endian           #
-        # QL_ENDIAN.EL = Little Endian || QL_ENDIAN.EB = Big Endian  #
-        # QL_ENDIAN.EB is define during ql_elf_check_archtype()      #
-        ##############################################################
+        ####################################
+        # Set pointersize (32bit or 64bit) #
+        ####################################
         self.archbit = ql_get_arch_bits(self.archtype)
-        if self.archtype not in (QL_ENDINABLE):
-            self.archendian = QL_ENDIAN.EL
+        self.pointersize = (self.archbit // 8)  
         
-        #Endian for shellcode needs to set manually
+        # Endian for shellcode needs to set manually
         if self.shellcoder and self.bigendian == True and self.archtype in (QL_ENDINABLE):
             self.archendian = QL_ENDIAN.EB
         elif self.shellcoder:
             self.archendian = QL_ENDIAN.EL
 
-        # based on CPU bit and set pointer size
-        if self.archbit:
-            self.pointersize = (self.archbit // 8)            
-
         #############
         # Component #
         #############
-        self.mem = ql_component_setup(self, "memory")
-        self.reg = ql_component_setup(self, "register")
+        self.mem = self.component_setup("os", "memory")
+        self.reg = self.component_setup("arch", "register")
+        self.profile = self.profile_setup()
 
         #####################################
         # Architecture                      #
         #####################################
         # Load architecture's and os module #
-        # ql.reg.pc, ql.reg.sp and etc      #
+        # ql.reg.arch_pc, ql.reg.arch_sp    #
+        # and other important stuff         #
         #####################################
-        self.arch = ql_arch_setup(self)
+        self.arch = self.arch_setup()
 
         ######
         # OS #
         ######
-        self.os = ql_os_setup(self)
+        self.os = self.os_setup()
 
-        ##########
-        # Loader #
-        ##########
-        self.loader = ql_loader_setup(self)
-       
+    # Emulate the binary from begin until @end, with timeout in @timeout and
+    # number of emulated instructions in @count
+    def run(self, begin=None, end=None, timeout=0, count=0):
+        # replace the original entry point, exit point, timeout and count
+        self.entry_point = begin
+        self.exit_point = end
+        self.timeout = timeout
+        self.count = count
 
-    def run(self):
+        # Run the loader
+        self.loader.run()
+        
         # setup strace filter for logger
-        if self.strace_filter != None and self.output == QL_OUTPUT.DEFAULT:
+        # FIXME: only works for logging due to we might need runtime disable nprint
+        if self.strace_filter != None and self.output == QL_OUTPUT.DEFAULT and self.log_file_fd:
             self.log_file_fd.addFilter(Strace_filter(self.strace_filter))
 
         # init debugger
@@ -210,84 +201,12 @@ class Qiling(QLCoreStructs, QLCoreHooks):
         # patch binary
         self.__enable_bin_patch()
 
-        # run the binary
+        # emulate the binary
         self.os.run()     
 
         # resume with debugger
         if self.debugger is not None:
             self.remotedebugsession.run()
-
-    # normal print out
-    def nprint(self, *args, **kw):
-        if self.multithread == True and self.os.thread_management is not None and self.os.thread_management.cur_thread is not None:
-            fd = self.os.thread_management.cur_thread.log_file_fd
-        else:
-            fd = self.log_file_fd
-
-        msg = args[0]
-
-        # support keyword "end" in ql.print functions, use it as terminator or default newline character by OS
-        msg += kw["end"] if kw.get("end", None) != None else pyos.linesep
-
-        fd.info(msg)
-
-        if fd is not None:
-            if isinstance(fd, logging.FileHandler):
-                fd.emit()
-            elif isinstance(fd, logging.StreamHandler):
-                fd.flush()
-
-    # debug print out, always use with verbose level with dprint(D_INFO,"helloworld")
-    def dprint(self, level, *args, **kw):
-        try:
-            self.verbose = int(self.verbose)
-        except:
-            raise QlErrorOutput("[!] Verbose muse be int")    
-        
-        if type(self.verbose) != int or self.verbose > 99 or (self.verbose > 1 and self.output not in (QL_OUTPUT.DEBUG, QL_OUTPUT.DUMP)):
-            raise QlErrorOutput("[!] Verbose > 1 must use with QL_OUTPUT.DEBUG or else ql.verbose must be 0")
-
-        if self.output == QL_OUTPUT.DUMP:
-            self.verbose = 99
-
-        if int(self.verbose) >= level and self.output in (QL_OUTPUT.DEBUG, QL_OUTPUT.DUMP):
-            self.nprint(*args, **kw)
-
-   
-    # replace linux or windows syscall/api with custom api/syscall
-    # if replace function name is needed, first syscall must be available
-    # - ql.set_syscall(0x04, my_syscall_write)
-    # - ql.set_syscall("write", my_syscall_write)
-    def set_syscall(self, syscall_cur, syscall_new):
-        if self.ostype in (QL_POSIX):
-            if isinstance(syscall_cur, int):
-                self.os.dict_posix_syscall_by_num[syscall_cur] = syscall_new
-            else:
-                syscall_name = "ql_syscall_" + str(syscall_cur)
-                self.os.dict_posix_syscall[syscall_name] = syscall_new
-        elif self.ostype == QL_OS.WINDOWS:
-            self.set_api(syscall_cur, syscall_new)
-
-    # replace Windows API with custom syscall
-    def set_api(self, syscall_cur, syscall_new):
-        if self.ostype == QL_OS.WINDOWS:
-            self.os.user_defined_api[syscall_cur] = syscall_new
-        elif self.ostype in (QL_POSIX):
-            self.set_syscall(syscall_cur, syscall_new)
-
-    def stack_push(self, data):
-        self.arch.stack_push(data)
-
-    def stack_pop(self):
-        return self.arch.stack_pop()
-
-    # read from stack, at a given offset from stack bottom
-    def stack_read(self, offset):
-        return self.arch.stack_read(offset)
-
-    # write to stack, at a given offset from stack bottom
-    def stack_write(self, offset, data):
-        self.arch.stack_write(offset, data)
 
     # patch @code to memory address @addr
     def patch(self, addr, code, file_name=b''):
@@ -296,22 +215,6 @@ class Qiling(QLCoreStructs, QLCoreHooks):
         else:
             self.patch_lib.append((addr, code, file_name.decode()))
     
-    # ql.register - read and write register 
-    def register(self, register_str= None, value= None):
-        return self.reg.rw(register_str, value)
-
-    def context(self, saved_context= None):
-        if saved_context == None:
-            return self.uc.context_save()
-        else:
-            self.uc.context_restore(saved_context)
-
-    def emu_stop(self):
-        self.uc.emu_stop()
-
-    def emu_start(self, begin, end, timeout=0, count=0):
-        self.uc.emu_start(begin, end, timeout, count)
-
     # ql.output var getter
     @property
     def output(self):
@@ -334,17 +237,16 @@ class Qiling(QLCoreStructs, QLCoreHooks):
 
     def __enable_bin_patch(self):
         for addr, code in self.patch_bin:
-            self.mem.write(self.loader.loadbase + addr, code)
+            self.mem.write(self.loader.load_address + addr, code)
 
     def enable_lib_patch(self):
         for addr, code, filename in self.patch_lib:
             self.mem.write(self.mem.get_lib_base(filename) + addr, code)
 
-    def set_timeout(self, microseconds):
-        self.timeout = microseconds
+    # stop emulation
+    def emu_stop(self):
+        self.uc.emu_stop()
 
-    def set_exit(self, until_addr):
-        self.until_addr = until_addr
-
-    def add_fs_mapper(self, fm, to):
-        self.fs_mapper.append([fm, to])
+    # start emulation
+    def emu_start(self, begin, end, timeout=0, count=0):
+        self.uc.emu_start(begin, end, timeout, count)

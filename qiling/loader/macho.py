@@ -16,14 +16,19 @@ class QlLoaderMACHO(QlLoader):
     # macho x8664 loader 
     def __init__(self, ql, dyld_path=None):
         super()
-        self.macho_file     = MachoParser(ql, ql.path)
+        self.dyld_path      = dyld_path
+        self.ql             = ql
+    
+    def run(self):
+        self.profile        = self.ql.profile
+        if self.ql.shellcoder:
+            return  
+        self.macho_file     = MachoParser(self.ql, self.ql.path)
         self.loading_file   = self.macho_file
-        self.slide          = 0x0000000000000000
-        self.dyld_slide     = 0x0000000500000000
+        self.slide          = int(self.profile.get("LOADER", "slide"),16)
+        self.dyld_slide     = int(self.profile.get("LOADER", "dyld_slide"),16)
         self.string_align   = 8
         self.ptr_align      = 8
-        self.ql             = ql
-        self.uc             = ql.uc
         self.binary_entry   = 0x0
         self.proc_entry     = 0x0
         self.stack_sp       = self.ql.os.stack_sp
@@ -31,7 +36,6 @@ class QlLoaderMACHO(QlLoader):
         self.envs           = self.ql.os.envs
         self.apples         = self.ql.os.apples
         self.argc           = 1
-        self.dyld_path      = dyld_path
         self.using_dyld     = False
         self.vm_end_addr    = 0x0
         self.loadMacho()
@@ -39,6 +43,11 @@ class QlLoaderMACHO(QlLoader):
 
 
     def loadMacho(self, depth=0, isdyld=False):
+        if self.ql.archtype== QL_ARCH.ARM64:
+            mmap_address   = int(self.profile.get("ARM64", "mmap_address"),16)
+        elif self.ql.archtype== QL_ARCH.X8664:
+            mmap_address   = int(self.profile.get("X8664", "mmap_address"),16)
+
         # MAX load depth 
         if depth > 5:
             return
@@ -90,11 +99,7 @@ class QlLoaderMACHO(QlLoader):
                             self.using_dyld = True
 
         if depth == 0:
-            if self.ql.mmap_start == 0:
-                self.mmap_start = self.ql.os.QL_MACOS_PREDEFINE_MMAPADDRESS
-            else:
-                self.mmap_start = self.ql.mmap_start
-
+            self.mmap_address = mmap_address
             self.stack_sp = self.loadStack()
             if self.using_dyld:
                 self.ql.nprint("[+] ProcEntry: {}".format(hex(self.proc_entry)))
@@ -104,7 +109,7 @@ class QlLoaderMACHO(QlLoader):
                 self.entry_point = self.proc_entry + self.slide
             self.ql.nprint("[+] Binary Entry Point: 0x{:X}".format(self.binary_entry))
             self.macho_entry = self.binary_entry + self.slide
-            self.loadbase = self.macho_entry
+            self.load_address = self.macho_entry
 
         return self.proc_entry
         
@@ -122,13 +127,13 @@ class QlLoaderMACHO(QlLoader):
 
         if seg_name[:10] == "__PAGEZERO":
             self.ql.dprint(D_INFO, "[+] Now loading {}, VM[{}:{}] for pagezero actually it only got a page size".format(seg_name, hex(vaddr_start), hex(vaddr_end)))
-            self.ql.mem.map(vaddr_start, PAGE_SIZE)
+            self.ql.mem.map(vaddr_start, PAGE_SIZE, info="[__PAGEZERO]")
             self.ql.mem.write(vaddr_start, b'\x00' * PAGE_SIZE)
             if self.vm_end_addr < vaddr_end:
                 self.vm_end_addr = vaddr_end
         else:
             self.ql.dprint(D_INFO, "[+] Now loading {}, VM[{}:{}]".format(seg_name, hex(vaddr_start), hex(vaddr_end)))
-            self.ql.mem.map(vaddr_start, seg_size)
+            self.ql.mem.map(vaddr_start, seg_size,  info="[loadSegment64]")
             self.ql.mem.write(vaddr_start, seg_data)
             if self.vm_end_addr < vaddr_end:
                 self.vm_end_addr = vaddr_end

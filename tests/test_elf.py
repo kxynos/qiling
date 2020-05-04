@@ -3,10 +3,10 @@
 # Cross Platform and Multi Architecture Advanced Binary Emulation Framework
 # Built on top of Unicorn emulator (www.unicorn-engine.org) 
 
-import sys, unittest, subprocess, string, random
+import sys, unittest, subprocess, string, random, os
 sys.path.append("..")
 from qiling import *
-from qiling.os.utils import *
+from qiling.const import *
 from qiling.exception import *
 from qiling.os.posix import syscall
 
@@ -55,15 +55,36 @@ class ELFTest(unittest.TestCase):
 
 
     def test_elf_linux_x8664(self):
+        def my_puts(ql):
+            addr = ql.func_arg[0]
+            print("puts(%s)" % ql.mem.string(addr))
+            
+            reg = ql.reg.read("rax")
+            print("reg : 0x%x" % reg)
+            ql.reg.rax = reg 
+        
         ql = Qiling(["../examples/rootfs/x8664_linux/bin/x8664_args","1234test", "12345678", "bin/x8664_hello"],  "../examples/rootfs/x8664_linux", output="debug")
-        addr = ql.mem.map_anywhere(0x100000)
-        ql.nprint("0x%x" %  addr)
+        ql.set_api('puts', my_puts)
         ql.run()
         del ql
 
 
     def test_tcp_elf_linux_x8664(self):
-        ql = Qiling(["../examples/rootfs/x8664_linux/bin/tcp_test"], "../examples/rootfs/x8664_linux")
+        ql = Qiling(["../examples/rootfs/x8664_linux/bin/x8664_tcp_test","20001"], "../examples/rootfs/x8664_linux")
+        ql.multithread = True
+        ql.run()
+        del ql
+
+
+    def test_tcp_elf_linux_arm(self):
+        ql = Qiling(["../examples/rootfs/arm_linux/bin/arm_tcp_test","20002"], "../examples/rootfs/arm_linux")
+        ql.multithread = True
+        ql.run()
+        del ql
+
+
+    def test_tcp_elf_linux_mips32el(self):
+        ql = Qiling(["../examples/rootfs/mips32el_linux/bin/mips32el_tcp_test","20003"], "../examples/rootfs/mips32el_linux")
         ql.multithread = True
         ql.run()
         del ql
@@ -76,9 +97,7 @@ class ELFTest(unittest.TestCase):
 
 
     def test_elf_linux_x86(self):
-        ql = Qiling(["../examples/rootfs/x86_linux/bin/x86_hello"], "../examples/rootfs/x86_linux", output="debug")
-        addr = ql.mem.map_anywhere(0x100000)
-        ql.nprint("0x%x" %  addr)        
+        ql = Qiling(["../examples/rootfs/x86_linux/bin/x86_hello"], "../examples/rootfs/x86_linux", output="debug")     
         ql.run()
         del ql
 
@@ -169,6 +188,10 @@ class ELFTest(unittest.TestCase):
         def test_syscall_ftruncate(ql, ftrunc_fd, ftrunc_length, *args):
             target = False
             pathname = ql.os.file_des[ftrunc_fd].name.split('/')[-1]
+            
+            reg = ql.reg.read("eax")
+            print("reg : 0x%x" % reg)
+            ql.reg.eax = reg 
 
             if pathname == "test_syscall_ftruncate.txt":
                 print("test => ftruncate(%d, 0x%x)" % (ftrunc_fd, ftrunc_length))
@@ -193,8 +216,13 @@ class ELFTest(unittest.TestCase):
 
 
     def test_elf_linux_arm(self):     
+        def my_puts(ql):
+            addr = ql.func_arg[0]
+            print("puts(%s)" % ql.mem.string(addr))
+            
         ql = Qiling(["../examples/rootfs/arm_linux/bin/arm_hello"], "../examples/rootfs/arm_linux", output = "debug", log_dir='logs')
         ql.log_split=True
+        ql.set_api('puts', my_puts)
         ql.run()
         del ql
 
@@ -340,6 +368,10 @@ class ELFTest(unittest.TestCase):
         def test_syscall_read(ql, read_fd, read_buf, read_count, *args):
             target = False
             pathname = ql.os.file_des[read_fd].name.split('/')[-1]
+            
+            reg = ql.reg.read("x0")
+            print("reg : 0x%x" % reg)
+            ql.reg.x0 = reg  
         
             if pathname == "test_syscall_read.txt":
                 print("test => read(%d, %s, %d)" % (read_fd, pathname, read_count))
@@ -461,7 +493,11 @@ class ELFTest(unittest.TestCase):
         def test_syscall_read(ql, read_fd, read_buf, read_count, *args):
             target = False
             pathname = ql.os.file_des[read_fd].name.split('/')[-1]
-        
+            
+            reg = ql.reg.read("v0")
+            print("reg : 0x%x" % reg)
+            ql.reg.v0 = reg  
+            
             if pathname == "test_syscall_read.txt":
                 print("test => read(%d, %s, %d)" % (read_fd, pathname, read_count))
                 target = True
@@ -563,6 +599,12 @@ class ELFTest(unittest.TestCase):
         def my_syscall_write(ql, write_fd, write_buf, write_count, *args, **kw):
             regreturn = 0
             buf = None
+            mapaddr = ql.mem.map_anywhere(0x100000)
+            ql.nprint("0x%x" %  mapaddr)
+            
+            reg = ql.reg.read("r0")
+            print("reg : 0x%x" % reg)
+            ql.reg.r0 = reg  
             
             try:
                 buf = ql.mem.read(write_buf, write_count)
